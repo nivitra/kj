@@ -1,0 +1,2 @@
+ALTER TABLE "StudioProfile" ADD COLUMN "inquirySettings" JSONB;
+ALTER TABLE "ServicePackage" ADD COLUMN "eventType" TEXT NOT NULL DEFAULT 'GENERAL', ADD COLUMN "details" JSONB NOT NULL DEFAULT '{}';

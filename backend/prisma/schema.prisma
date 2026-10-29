@@ -1,0 +1,1585 @@
+generator client {
+  provider      = "prisma-client-js"
+  // Alpine (musl) production images — OpenSSL 3
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy & people
+// ---------------------------------------------------------------------------
+
+model Studio {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  phone     String?
+  logoUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shortLinks     ShortLink[]
+  admins         AdminUser[]
+  customers      Customer[]
+  galleries      EventGallery[]
+  clientTypes    ClientType[]
+  frameProducts  FrameProduct[]
+  pricing        PricingSettings?
+  profile        StudioProfile?
+  servicePackages ServicePackage[]
+  portfolioItems PortfolioItem[]
+  announcements  Announcement[]
+  bookings       CustomerBooking[]
+  leads          Lead[]
+  coupons        Coupon[]
+  invoices       Invoice[]
+  receipts       Receipt[]
+  quoteOptions   QuoteOption[]
+  quoteAddOns    QuoteAddOn[]
+  quotes         Quote[]
+  whatsappSession WhatsAppSession?
+  whatsappTemplates WhatsAppTemplate[]
+  whatsappMessages  WhatsAppMessageLog[]
+  whatsappCampaigns WhatsAppCampaign[]
+}
+
+model AdminUser {
+  id           String    @id @default(uuid())
+  studioId     String
+  email        String    @unique
+  passwordHash String
+  name         String
+  role         AdminRole @default(STAFF)
+  totpSecret   String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  studio    Studio     @relation(fields: [studioId], references: [id])
+  auditLogs AuditLog[]
+  leadNotes LeadNote[]
+
+  @@index([studioId])
+}
+
+model Customer {
+  id           String    @id @default(uuid())
+  studioId     String
+  name         String
+  email        String?
+  phone        String?
+  notes        String?
+  /// Free-text status set by the studio (shown on the customer dashboard).
+  status       String?
+  /// Cognito User Pool subject (immutable). Primary identity for customer auth.
+  cognitoSub   String?   @unique
+  /// Legacy studio-issued login (optional once Cognito is primary).
+  loginId      String?   @unique
+  /// Legacy local password hash — unused for Cognito-authenticated customers.
+  passwordHash String?
+  /// Cognito / studio account flag (ACTIVE | DISABLED).
+  accountStatus String   @default("ACTIVE")
+  emailVerified Boolean  @default(false)
+  /// Approximate storage used by this customer's galleries (bytes).
+  storageUsedBytes BigInt @default(0)
+  /// Studio package (ClientType) assigned to this client — drives included photos / pricing.
+  packageId    String?
+  /// Package the customer asked for (may differ until studio confirms).
+  requestedPackageId String?
+  /// Free-text payment terms shown on the customer profile (admin-authored).
+  paymentTerms     String?
+  /// Package / contract total due (studio-entered, offline payments).
+  paymentTotalDue  Decimal?  @db.Decimal(12, 2)
+  /// Amount already paid (studio-entered ledger summary).
+  paymentAmountPaid Decimal? @db.Decimal(12, 2)
+  paymentCurrency  String    @default("INR")
+  /// Guest share visitors (not full clients) — hide from main client lists optionally.
+  isGuest          Boolean   @default(false)
+  /// When true, customer app uses exclusive WeddingTheme experience.
+  weddingExperience Boolean  @default(false)
+  brideName         String?
+  groomName         String?
+  weddingDate       DateTime?
+  weddingVenue      String?
+  /// S3 key for couple hero portrait (full-bleed home).
+  couplePhotoKey    String?
+  /// S3 key for wide cover / secondary hero.
+  weddingCoverKey   String?
+  /// Optional “booking day” memory photo (Our Journey).
+  bookingPhotoKey   String?
+  albumStatus       String?
+  deliveryStatus    String?
+  photographerName  String?
+  cinematographerName String?
+  weddingNotes      String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  studio             Studio              @relation(fields: [studioId], references: [id])
+  package            ClientType?         @relation("CustomerPackage", fields: [packageId], references: [id], onDelete: SetNull)
+  requestedPackage   ClientType?         @relation("CustomerRequestedPackage", fields: [requestedPackageId], references: [id], onDelete: SetNull)
+  accessGrants       AccessGrant[]
+  favorites          Favorite[]
+  selections         Selection[]
+  orders             Order[]
+  payments           Payment[]
+  contracts          Contract[]
+  weddingAgreements  WeddingAgreement[]
+  faceSearchSessions FaceSearchSession[]
+  consentRecords     ConsentRecord[]
+  booking            CustomerBooking?
+  leads              Lead[]
+  shareLinksCreated  GalleryShareLink[]  @relation("ShareLinkCreator")
+  invoices           Invoice[]
+  couponRedemptions  CouponRedemption[]
+  quotes             Quote[]
+
+  @@unique([studioId, email])
+  @@unique([studioId, phone])
+  @@index([studioId])
+  @@index([packageId])
+  @@index([requestedPackageId])
+  @@index([accountStatus])
+}
+
+// ---------------------------------------------------------------------------
+// Customer Portal V2 — Studio CMS (profile, packages, portfolio, booking, …)
+// ---------------------------------------------------------------------------
+
+model StudioProfile {
+  inquirySettings Json?
+  id              String   @id @default(uuid())
+  studioId        String   @unique
+  logoKey         String?
+  coverKey        String?
+  paymentQrKey    String?
+  upiId           String?
+  displayName     String?
+  tagline         String?
+  about           String?
+  welcomeMessage  String?
+  phone           String?
+  whatsapp        String?
+  email           String?
+  website         String?
+  instagram       String?
+  facebook        String?
+  youtube         String?
+  address         String?
+  mapsUrl         String?
+  workingHours    String?
+  themeColor      String?  @default("#1A1917")
+  secondaryColor  String?  @default("#9A7B4F")
+  /// Customer app palette: warm | zinc | stone | slate
+  appTheme        String   @default("warm")
+  /// Customer app mode: light | dark | system
+  appThemeMode    String   @default("system")
+  termsHtml       String?
+  privacyHtml     String?
+  refundHtml      String?
+  /// GST / tax percent applied by quote engine (0 = no tax line).
+  taxPercent      Decimal  @default(0) @db.Decimal(5, 2)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+}
+
+/// Marketing / booking packages shown in the customer app (separate from ClientType pricing).
+model ServicePackage {
+  eventType String @default("GENERAL")
+  details Json @default("{}")
+  id            String   @id @default(uuid())
+  studioId      String
+  title         String
+  description   String?
+  coverKey      String?
+  price         Decimal  @default(0) @db.Decimal(12, 2)
+  discountPrice Decimal? @db.Decimal(12, 2)
+  isFeatured    Boolean  @default(false)
+  displayOrder  Int      @default(0)
+  active        Boolean  @default(true)
+  /// Custom booking timeline steps for this package.
+  /// JSON array: [{ "key": "ENQUIRY", "label": "Enquiry received", "order": 0 }, ...]
+  bookingSteps  Json     @default("[]")
+  /// Free photo selections included (selection limit). Same source for client assign + gallery pricing.
+  includedPhotos     Int?
+  /// ₹ per extra photo beyond includedPhotos — legacy single rate (treated as EDITED rate if edited rate unset).
+  pricePerExtraPhoto Decimal? @db.Decimal(10, 2)
+  /// Extra if studio delivers RAW only (default ₹200).
+  pricePerExtraRaw   Decimal? @db.Decimal(10, 2)
+  /// Extra if studio delivers RAW + EDITED (default ₹350).
+  pricePerExtraEdited Decimal? @db.Decimal(10, 2)
+  /// SELECT_ONLY | SELECT_AND_DOWNLOAD | DOWNLOAD_ONLY
+  workflowMode       String   @default("SELECT_ONLY")
+  /// Linked ClientType row used for Customer.packageId / gallery.clientTypeId (synced).
+  selectionTierId    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  studio    Studio                  @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  features  ServicePackageFeature[]
+  leads     Lead[]
+  bookings  CustomerBooking[]
+  invoices  Invoice[]
+  quoteOptions QuoteOption[]
+
+  @@index([studioId, active, displayOrder])
+  @@index([selectionTierId])
+}
+
+model ServicePackageFeature {
+  id           String @id @default(uuid())
+  packageId    String
+  title        String
+  displayOrder Int    @default(0)
+
+  package ServicePackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@index([packageId, displayOrder])
+}
+
+model PortfolioItem {
+  id           String   @id @default(uuid())
+  studioId     String
+  title        String
+  description  String?
+  /// Primary cover (first media or explicit cover). Kept for backward compat.
+  coverKey     String?
+  mediaKey     String?
+  mediaType    String   @default("IMAGE") // IMAGE | VIDEO | REEL (primary)
+  /// External link (Instagram Reel / post). Used when mediaType = REEL.
+  externalUrl  String?
+  category     String?
+  displayOrder Int      @default(0)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  media  PortfolioMedia[]
+
+  @@index([studioId, active, displayOrder])
+  @@index([studioId, category])
+}
+
+/// Extra photos/videos for a portfolio work (optional multi-image set).
+model PortfolioMedia {
+  id              String   @id @default(uuid())
+  portfolioItemId String
+  mediaKey        String
+  mediaType       String   @default("IMAGE") // IMAGE | VIDEO
+  caption         String?
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  portfolioItem PortfolioItem @relation(fields: [portfolioItemId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioItemId, sortOrder])
+}
+
+model Announcement {
+  id          String    @id @default(uuid())
+  studioId    String
+  title       String
+  description String?
+  imageKey    String?
+  priority    Int       @default(0)
+  active      Boolean   @default(true)
+  expiresAt   DateTime?
+  /// FEED | BANNER | POPUP | BOTH — how the client app surfaces this.
+  style       String    @default("FEED")
+  /// Optional deep-link or external URL for “Learn more”.
+  ctaLabel    String?
+  ctaUrl      String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+
+  @@index([studioId, active, priority])
+}
+
+model CustomerBooking {
+  id                   String   @id @default(uuid())
+  studioId             String
+  customerId           String   @unique
+  /// Optional marketing package driving custom booking steps.
+  servicePackageId     String?
+  status               String   @default("ENQUIRY_RECEIVED")
+  notes                String?
+  estimatedCompletion  DateTime?
+  /// Confirmed shoot date/time after admin accepts a slot request.
+  confirmedDate        DateTime?
+  confirmedTime        String?
+  confirmedLeadId      String?
+  /// Pending / requested date & time for initial booking or reschedule
+  requestedDate        DateTime?
+  requestedTime        String?
+  /// NONE | REQUESTED | RESCHEDULE_REQUESTED | ACCEPTED | DECLINED
+  slotStatus           String   @default("NONE")
+  rescheduleNote       String?
+  rescheduleRequestedAt DateTime?
+  history              Json     @default("[]")
+  /// Separate jobs (each enquiry/book keeps its own package + timeline).
+  /// [{ id, packageId, packageTitle, source, status, steps, history, slot… }]
+  jobs                 Json     @default("[]")
+  updatedAt            DateTime @updatedAt
+  createdAt            DateTime @default(now())
+
+  studio         Studio          @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  customer       Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  servicePackage ServicePackage? @relation(fields: [servicePackageId], references: [id], onDelete: SetNull)
+
+  @@index([studioId])
+  @@index([status])
+  @@index([slotStatus])
+  @@index([servicePackageId])
+}
+
+// ---------------------------------------------------------------------------
+// Coupons (admin create + customer apply)
+// ---------------------------------------------------------------------------
+
+model Coupon {
+  id              String    @id @default(uuid())
+  studioId        String
+  code            String
+  description     String?
+  /// PERCENT | FIXED
+  discountType    String    @default("PERCENT")
+  discountValue   Decimal   @db.Decimal(12, 2)
+  minOrderAmount  Decimal?  @db.Decimal(12, 2)
+  maxRedemptions  Int?
+  redemptionCount Int       @default(0)
+  /// Optional list of ServicePackage ids; empty = all packages
+  packageIds      Json      @default("[]")
+  active          Boolean   @default(true)
+  startsAt        DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  studio      Studio             @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  redemptions CouponRedemption[]
+
+  @@unique([studioId, code])
+  @@index([studioId, active])
+}
+
+model CouponRedemption {
+  invoiceId    String? @unique
+  id           String   @id @default(uuid())
+  couponId     String
+  customerId   String
+  studioId     String
+  /// Snapshot of discount applied
+  amountSaved  Decimal  @default(0) @db.Decimal(12, 2)
+  orderAmount  Decimal? @db.Decimal(12, 2)
+  packageId    String?
+  note         String?
+  createdAt    DateTime @default(now())
+
+  coupon   Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([couponId])
+  @@index([customerId])
+  @@index([studioId])
+}
+
+// ---------------------------------------------------------------------------
+// Invoices + installments (admin create/send, customer view)
+// ---------------------------------------------------------------------------
+
+model Invoice {
+  id            String   @id @default(uuid())
+  studioId      String
+  customerId    String
+  packageId     String?
+  invoiceNumber String
+  title         String   @default("Service Invoice")
+  /// DRAFT | SENT | FINALIZED | PARTIALLY_PAID | PAID | VOID
+  status        String   @default("DRAFT")
+  /// INVOICE | RECEIPT (legacy RECEIPT children — stop writing)
+  kind          String   @default("INVOICE")
+  /// Parent service invoice when kind = RECEIPT (legacy)
+  parentInvoiceId String?
+  currency      String   @default("INR")
+  /// Denorm of line items (or explicit total); ledger is SoT for paid/outstanding
+  totalAmount   Decimal  @db.Decimal(12, 2)
+  travelAmount  Decimal  @default(0) @db.Decimal(12, 2)
+  /// CACHE of cash paid (Σ PAYMENT − Σ REFUND). Not client-writable.
+  amountPaid    Decimal  @default(0) @db.Decimal(12, 2)
+  /// CACHE of outstanding balance
+  cachedOutstanding Decimal? @db.Decimal(12, 2)
+  notes         String?
+  terms         String?
+  couponCode    String?
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  taxAmount     Decimal  @default(0) @db.Decimal(12, 2)
+  taxLabel      String?
+  packageSnapshot Json?
+  customerGstin String?
+  studioGstin   String?
+  issuedAt      DateTime?
+  sentAt        DateTime?
+  dueDate       DateTime?
+  voidedAt      DateTime?
+  voidReason    String?
+  finalizedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdById   String?
+
+  studio       Studio              @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  customer     Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  package      ServicePackage?     @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  parentInvoice Invoice?           @relation("InvoiceReceipts", fields: [parentInvoiceId], references: [id], onDelete: SetNull)
+  legacyReceipts Invoice[]         @relation("InvoiceReceipts")
+  installments InvoiceInstallment[]
+  payments     InvoicePayment[]
+  lineItems    InvoiceLineItem[]
+  documentReceipts Receipt[]
+  revisions    InvoiceRevision[]
+
+  @@unique([studioId, invoiceNumber])
+  @@index([studioId, status])
+  @@index([studioId, customerId])
+  @@index([customerId])
+  @@index([parentInvoiceId])
+}
+
+model InvoiceLineItem {
+  id          String  @id @default(uuid())
+  invoiceId   String
+  sortOrder   Int     @default(0)
+  /// PACKAGE | ADDON | TRAVEL | DISCOUNT | TAX | CUSTOM
+  kind        String  @default("CUSTOM")
+  description String
+  quantity    Decimal @default(1) @db.Decimal(12, 2)
+  unitAmount  Decimal @db.Decimal(12, 2)
+  lineTotal   Decimal @db.Decimal(12, 2)
+  hsnCode     String?
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, sortOrder])
+}
+
+/// Optional payment milestones (reminders only — not cash SoT).
+model InvoiceInstallment {
+  id          String    @id @default(uuid())
+  invoiceId   String
+  sortOrder   Int       @default(0)
+  label       String
+  percentage  Decimal?  @db.Decimal(5, 2)
+  amount      Decimal   @db.Decimal(12, 2)
+  dueDate     DateTime?
+  terms       String?
+  notes       String?
+  /// Cache only during dual-write: PENDING | PARTIAL | PAID | WAIVED
+  status      String    @default("PENDING")
+  paidAt      DateTime?
+  paidAmount  Decimal?  @db.Decimal(12, 2)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  invoice  Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  payments InvoicePayment[]
+
+  @@index([invoiceId, sortOrder])
+  @@index([dueDate])
+}
+
+/// Immutable payment ledger (source of truth for cash/applied amounts).
+model InvoicePayment {
+  id              String    @id @default(uuid())
+  studioId        String
+  invoiceId       String
+  installmentId   String?   // deprecated — always null for new rows
+  /// PAYMENT | ROUND_OFF | WRITE_OFF | ADJUSTMENT | REFUND
+  kind            String    @default("PAYMENT")
+  amount          Decimal   @db.Decimal(12, 2)
+  /// CASH | UPI | BANK | CARD | CHEQUE | OTHER
+  method          String?
+  reference       String?
+  note            String?
+  paidAt          DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  createdById     String?
+  voidedAt        DateTime?
+  voidReason      String?
+  voidedById      String?
+  idempotencyKey  String?
+  gatewayProvider String?
+  gatewayRef      String?
+  gatewayStatus   String?
+
+  invoice     Invoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  installment InvoiceInstallment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  receipts    Receipt[]
+
+  @@index([invoiceId, paidAt])
+  @@index([studioId, paidAt])
+  @@index([studioId, method, paidAt])
+  @@index([installmentId])
+}
+
+/// Payment proof document (not an Invoice child).
+model Receipt {
+  id            String    @id @default(uuid())
+  studioId      String
+  invoiceId     String
+  paymentId     String
+  receiptNumber String
+  /// ACTIVE | VOID
+  status        String    @default("ACTIVE")
+  voidedAt      DateTime?
+  voidReason    String?
+  pdfKey        String?
+  issuedAt      DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+
+  studio  Studio         @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  invoice Invoice        @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  payment InvoicePayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@unique([studioId, receiptNumber])
+  @@index([invoiceId])
+  @@index([paymentId])
+}
+
+model InvoiceRevision {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  revision    Int
+  snapshot    Json
+  reason      String?
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceId, revision])
+  @@index([invoiceId])
+}
+
+model Lead {
+  id         String   @id @default(uuid())
+  studioId   String
+  customerId String?
+  packageId  String?
+  name       String?
+  email      String?
+  phone      String?
+  message    String?
+  /// Structured payload (e.g. wedding enquiry form answers).
+  formData   Json?
+  source     String   @default("ENQUIRE") // ENQUIRE | BOOK | CONTACT | WHATSAPP | WEDDING
+  status     String   @default("NEW") // NEW | CONTACTED | WON | LOST
+  /// GENERAL | WEDDING
+  inquiryKind   String @default("GENERAL")
+  /// PENDING | IN_REVIEW | APPROVED | REJECTED | BOOKED
+  inquiryStatus String @default("PENDING")
+  /// Preferred / requested shoot date (customer).
+  requestedDate DateTime?
+  /// Preferred time "HH:mm" (24h) or label like "10:00".
+  requestedTime String?
+  /// NONE | REQUESTED | RESCHEDULE_REQUESTED | ACCEPTED | DECLINED
+  slotStatus    String   @default("NONE")
+  /// Final slot after admin accepts.
+  confirmedDate DateTime?
+  confirmedTime String?
+  rescheduleNote String?
+  rescheduleRequestedAt DateTime?
+  adminNote     String?
+  decidedAt     DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  studio   Studio          @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  customer Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  package  ServicePackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  notes    LeadNote[]
+  quotes   Quote[]
+
+  @@index([studioId, status, createdAt])
+  @@index([studioId, slotStatus, createdAt])
+  @@index([studioId, inquiryKind, inquiryStatus, createdAt])
+  @@index([customerId])
+}
+
+/// Internal staff notes on a lead / wedding inquiry.
+model LeadNote {
+  id            String    @id @default(uuid())
+  leadId        String
+  authorAdminId String?
+  authorName    String?
+  body          String
+  createdAt     DateTime  @default(now())
+
+  lead   Lead       @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  author AdminUser? @relation(fields: [authorAdminId], references: [id], onDelete: SetNull)
+
+  @@index([leadId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Client types, pricing, frames (commerce config)
+// ---------------------------------------------------------------------------
+
+/// Studio packages (Wedding Basic, Portrait Gold, etc.) — sold/assigned to clients.
+/// Also attachable to galleries via EventGallery.clientTypeId for per-gallery overrides.
+model ClientType {
+  id                 String       @id @default(uuid())
+  studioId           String
+  name               String
+  slug               String
+  description        String?
+  /// Package base fee (INR etc.) charged for this package.
+  basePrice          Decimal      @default(0) @db.Decimal(10, 2)
+  workflowMode       WorkflowMode @default(SELECT_ONLY)
+  paymentMode        PaymentMode  @default(OFFLINE)
+  includedPhotos     Int?
+  pricePerExtraPhoto Decimal?     @db.Decimal(10, 2)
+  active             Boolean      @default(true)
+  sortOrder          Int          @default(0)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  studio              Studio         @relation(fields: [studioId], references: [id])
+  galleries           EventGallery[]
+  customers           Customer[]     @relation("CustomerPackage")
+  requestedByCustomers Customer[]    @relation("CustomerRequestedPackage")
+
+  @@unique([studioId, slug])
+  @@index([studioId])
+}
+
+model PricingSettings {
+  id                 String   @id @default(uuid())
+  studioId           String   @unique
+  currency           String   @default("INR")
+  includedPhotos     Int      @default(0)
+  pricePerExtraPhoto Decimal  @default(0) @db.Decimal(10, 2)
+  baseGalleryFee     Decimal  @default(0) @db.Decimal(10, 2)
+  watermarkEnabled   Boolean  @default(true)
+  faceSearchThreshold Float?
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  studio Studio @relation(fields: [studioId], references: [id])
+}
+
+model FrameProduct {
+  id          String   @id @default(uuid())
+  studioId    String
+  name        String
+  description String?
+  size        String?
+  material    String?
+  imageKey    String?
+  price       Decimal  @default(0) @db.Decimal(10, 2)
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  studio     Studio      @relation(fields: [studioId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([studioId])
+}
+
+// ---------------------------------------------------------------------------
+// Galleries & photos
+// ---------------------------------------------------------------------------
+
+model EventGallery {
+  pricingSnapshot Json?
+  id                  String          @id @default(uuid())
+  studioId            String
+  clientTypeId        String?
+  name                String
+  description         String?
+  eventDate           DateTime?
+  coverPhotoUrl       String?
+  status              GalleryStatus   @default(DRAFT)
+  downloadEnabled     Boolean         @default(false)
+  paymentComplete     Boolean         @default(false)
+  watermarkEnabled    Boolean?
+  uploadQuality       Int?
+  faceSearchEnabled   Boolean         @default(false)
+  faceSearchThreshold Float?
+  faceIndexStatus     FaceIndexStatus @default(NOT_STARTED)
+  /// SELECTION = client picks favourites; DELIVERY = final edited files (download-focused); GENERAL = both/default.
+  purpose             String          @default("GENERAL")
+  /// When false, clients cannot heart / submit selections (view & download only as allowed).
+  selectionEnabled    Boolean         @default(true)
+  /// Optional gallery override: free photo selections (else package → studio defaults).
+  selectionLimit      Int?
+  /// Optional gallery override: ₹ per extra selection beyond limit (else package → studio → 350).
+  extraPhotoPrice     Decimal?        @db.Decimal(10, 2)
+  /// Photo used as the gallery cover (source). Cropped pixels live in coverPhotoUrl when set.
+  coverPhotoId        String?
+  /// Normalized crop of the cover source: { x, y, width, height, aspect }.
+  coverCrop           Json?
+  /// Admin-set bulk price so the client can buy every remaining original near expiry.
+  bulkRawEnabled      Boolean         @default(false)
+  bulkRawPrice        Decimal?        @db.Decimal(12, 2)
+  /// Show the FOMO offer this many days before expiresAt.
+  bulkRawWindowDays   Int             @default(14)
+  /// Latest RAW-dump invoice for this gallery (any customer — last request).
+  bulkRawInvoiceId    String?
+  retentionUntil      DateTime?
+  expiresAt           DateTime?
+  /// Soft-delete (recycle bin). Null = active. After purgeAt, S3 + DB are hard-removed.
+  deletedAt           DateTime?
+  /// When permanent purge should run (deletedAt + 30 days).
+  purgeAt             DateTime?
+  deletedByAdminId    String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  studio             Studio              @relation(fields: [studioId], references: [id])
+  clientType         ClientType?         @relation(fields: [clientTypeId], references: [id])
+  photos             Photo[]
+  accessGrants       AccessGrant[]
+  selections         Selection[]
+  contracts          Contract[]
+  auditLogs          AuditLog[]
+  shareLinks         GalleryShareLink[]
+
+  @@index([studioId])
+  @@index([status])
+  @@index([studioId, deletedAt])
+  @@index([purgeAt])
+}
+
+/// Public QR / link for relatives to open a gallery without the primary client's login.
+model GalleryShareLink {
+  id                  String    @id @default(uuid())
+  token               String    @unique
+  galleryId           String
+  studioId            String
+  createdByCustomerId String?
+  label               String?
+  active              Boolean   @default(true)
+  expiresAt           DateTime?
+  visitCount          Int       @default(0)
+  /// bcrypt hash of optional full-gallery access code (never store plaintext).
+  fullAccessCodeHash  String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  gallery           EventGallery @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+  createdByCustomer Customer?    @relation("ShareLinkCreator", fields: [createdByCustomerId], references: [id], onDelete: SetNull)
+  guests            GalleryGuest[]
+
+  @@index([galleryId])
+  @@index([studioId])
+  @@index([token])
+}
+
+/// Relative / friend who entered via a share link (name + phone + face).
+model GalleryGuest {
+  id            String   @id @default(uuid())
+  shareLinkId   String
+  galleryId     String
+  studioId      String
+  name          String
+  phone         String
+  /// Long-lived guest session token (Bearer for guest APIs).
+  sessionToken  String   @unique
+  /// Linked shadow customer used for face search / grants.
+  customerId    String?
+  faceSessionId String?
+  /// Unlocked full gallery via share full-access code.
+  fullAccess    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+
+  shareLink GalleryShareLink @relation(fields: [shareLinkId], references: [id], onDelete: Cascade)
+
+  @@index([shareLinkId])
+  @@index([galleryId])
+  @@index([studioId, phone])
+  @@index([sessionToken])
+}
+
+model Photo {
+  id                     String                @id @default(uuid())
+  galleryId              String
+  originalKey            String                @unique
+  thumbnailKey           String?
+  previewKey             String?
+  /// IMAGE | VIDEO
+  mediaType              String                @default("IMAGE")
+  /// Video poster / still frame key (optional for images).
+  posterKey              String?
+  durationMs             Int?
+  filename               String
+  fileSize               Int
+  mimeType               String
+  sha256                 String?
+  width                  Int?
+  height                 Int?
+  capturedAt             DateTime?
+  ingestionStatus        IngestionStatus       @default(REGISTERED)
+  processingStatus       PhotoProcessingStatus @default(PENDING)
+  processingAttempts     Int                   @default(0)
+  lastErrorCode          String?
+  lastErrorMessageSafe   String?
+  rekognitionIndexedAt   DateTime?
+  faceIndexed            Boolean               @default(false)
+  isVisibleToCustomers   Boolean               @default(false)
+  sortOrder              Int                   @default(0)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  gallery        EventGallery    @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+  favorites      Favorite[]
+  selectionItems SelectionItem[]
+  orderItems     OrderItem[]
+  photoFaces     PhotoFace[]
+
+  @@unique([galleryId, sha256])
+  @@index([galleryId])
+  @@index([galleryId, mediaType])
+  @@index([galleryId, ingestionStatus])
+  @@index([galleryId, filename])
+  @@index([processingStatus])
+}
+
+model AccessGrant {
+  rawInvoiceId String?
+  id         String    @id @default(uuid())
+  customerId String
+  galleryId  String
+  grantedAt  DateTime  @default(now())
+  expiresAt  DateTime?
+  token      String?   @unique
+  /// Full originals for every asset in this gallery — skip culling / selection limits.
+  rawAccess           Boolean   @default(false)
+  rawGrantedAt        DateTime?
+  rawGrantedByAdminId String?
+  /// SELECTION | RAW | VIEW — what this client may do in this gallery.
+  accessMode          String    @default("SELECTION")
+  /// Per-assignment included-photo cap (null = inherit gallery → package).
+  selectionLimit      Int?
+  /// Per-assignment ₹/extra (null = inherit gallery → package).
+  extraPhotoPrice     Decimal?  @db.Decimal(10, 2)
+  /// null = inherit gallery.downloadEnabled. RAW forces true; VIEW forces false.
+  downloadEnabled     Boolean?
+  /// null = inherit gallery.faceSearchEnabled. RAW defaults to on.
+  faceSearchEnabled   Boolean?
+
+  customer Customer     @relation(fields: [customerId], references: [id])
+  gallery  EventGallery @relation(fields: [galleryId], references: [id])
+
+  @@unique([customerId, galleryId])
+  @@index([customerId])
+  @@index([galleryId])
+}
+
+model Favorite {
+  id         String   @id @default(uuid())
+  customerId String
+  photoId    String
+  createdAt  DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  photo    Photo    @relation(fields: [photoId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, photoId])
+}
+
+// ---------------------------------------------------------------------------
+// Selections (finalized photo picks)
+// ---------------------------------------------------------------------------
+
+model Selection {
+  id           String          @id @default(uuid())
+  customerId   String
+  galleryId    String
+  status       SelectionStatus @default(OPEN)
+  submittedAt  DateTime?
+  customerNote String?
+  adminNote    String?
+  /// History of submission batches: [{ batchNumber: 1, submittedAt: Date, count: 10, freeCount: 10, extraCount: 0, items: [...] }, ...]
+  history      Json            @default("[]")
+  /// Snapshot at submit: free allowance used / extras / rate
+  includedLimit Int?
+  extraCount    Int            @default(0)
+  extraUnitPrice Decimal?      @db.Decimal(10, 2)
+  overageAmount  Decimal?      @db.Decimal(12, 2)
+  /// Invoice that carries the selection overage ADDON line (if any)
+  overageInvoiceId String?
+  overageSyncedAt  DateTime?
+  /// After submit: AWAITING_CLASSIFY → CLASSIFIED → BILLED
+  deliveryStatus   String      @default("NONE")
+  rawCount         Int         @default(0)
+  editedCount      Int         @default(0)
+  freeCount        Int         @default(0)
+  rawExtraCount    Int         @default(0)
+  editedExtraCount Int         @default(0)
+  rawUnitPrice     Decimal?    @db.Decimal(10, 2)
+  editedUnitPrice  Decimal?    @db.Decimal(10, 2)
+  classifiedAt     DateTime?
+  billedAt         DateTime?
+  /// When studio staff first opened this submitted selection. Null = unread (green dot).
+  adminOpenedAt    DateTime?
+  /// When the client locked included (package) photos. Null = still in included phase.
+  editingStartedAt DateTime?
+  revision         Int @default(0)
+  pricingSnapshot  Json?
+  includedLockedAt DateTime?
+  /// NONE | EXTRAS | INCLUDED — admin unlock. INCLUDED reopens package picks.
+  unlockMode       String          @default("NONE")
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  customer Customer        @relation(fields: [customerId], references: [id])
+  gallery  EventGallery    @relation(fields: [galleryId], references: [id])
+  items    SelectionItem[]
+
+  @@unique([customerId, galleryId])
+  @@index([galleryId])
+  @@index([status])
+  @@index([overageInvoiceId])
+  @@index([deliveryStatus])
+}
+
+model SelectionItem {
+  editingStartedAt DateTime?
+  id          String   @id @default(uuid())
+  selectionId String
+  photoId     String
+  batchNumber Int      @default(1)
+  submittedAt DateTime @default(now())
+  /// After client submits: studio marks RAW (₹200 extra) or EDITED (₹350 extra). Null = not classified yet.
+  deliveryType String?
+  createdAt   DateTime @default(now())
+
+  selection Selection @relation(fields: [selectionId], references: [id], onDelete: Cascade)
+  photo     Photo     @relation(fields: [photoId], references: [id], onDelete: Cascade)
+
+  @@unique([selectionId, photoId])
+  @@index([selectionId, deliveryType])
+  @@index([selectionId, batchNumber])
+}
+
+// ---------------------------------------------------------------------------
+// Orders, payments (offline commerce)
+// ---------------------------------------------------------------------------
+
+model Order {
+  id           String      @id @default(uuid())
+  studioId     String
+  customerId   String
+  galleryId    String?
+  orderNumber  String      @unique
+  status       OrderStatus @default(PLACED)
+  subtotal     Decimal     @default(0) @db.Decimal(10, 2)
+  total        Decimal     @default(0) @db.Decimal(10, 2)
+  customerNote String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  customer Customer    @relation(fields: [customerId], references: [id])
+  items    OrderItem[]
+  payments Payment[]
+
+  @@index([studioId])
+  @@index([customerId])
+  @@index([status])
+}
+
+model OrderItem {
+  id             String   @id @default(uuid())
+  orderId        String
+  frameProductId String
+  photoId        String?
+  quantity       Int      @default(1)
+  unitPrice      Decimal  @default(0) @db.Decimal(10, 2)
+  createdAt      DateTime @default(now())
+
+  order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  frameProduct FrameProduct @relation(fields: [frameProductId], references: [id])
+  photo        Photo?       @relation(fields: [photoId], references: [id])
+}
+
+model Payment {
+  id         String        @id @default(uuid())
+  studioId   String
+  customerId String
+  galleryId  String?
+  orderId    String?
+  amount     Decimal       @db.Decimal(10, 2)
+  method     PaymentMethod @default(CASH)
+  gatewayRef String?
+  receivedAt DateTime      @default(now())
+  note       String?
+  createdAt  DateTime      @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  order    Order?   @relation(fields: [orderId], references: [id])
+
+  @@index([studioId])
+  @@index([customerId])
+}
+
+// ---------------------------------------------------------------------------
+// Contracts
+// ---------------------------------------------------------------------------
+
+model Contract {
+  id             String         @id @default(uuid())
+  studioId       String
+  customerId     String
+  galleryId      String?
+  title          String
+  fileKey        String
+  fileSize       Int
+  status         ContractStatus @default(SENT)
+  sentAt         DateTime       @default(now())
+  viewedAt       DateTime?
+  acceptedAt     DateTime?
+  acceptedFromIp String?
+  /// WEDDING_FORM | UPLOAD
+  source         String         @default("UPLOAD")
+  /// Snapshot of form answers when generated from Make Agreement wizard.
+  formData       Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  customer Customer      @relation(fields: [customerId], references: [id])
+  gallery  EventGallery? @relation(fields: [galleryId], references: [id])
+
+  @@index([studioId])
+  @@index([customerId])
+}
+
+/// Draft / finalized structured wedding agreement (Google-Forms style sections).
+model WeddingAgreement {
+  id           String   @id @default(uuid())
+  studioId     String
+  customerId   String
+  title        String   @default("Wedding Service Agreement")
+  /// DRAFT | FINALIZED
+  status       String   @default("DRAFT")
+  /// Full section answers (JSON)
+  formData     Json     @default("{}")
+  /// Generated PDF S3 key (same as linked Contract.fileKey when finalized)
+  pdfKey       String?
+  fileSize     Int?
+  contractId   String?  @unique
+  finalizedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  quotes   Quote[]
+
+  @@index([studioId, customerId])
+  @@index([status])
+}
+
+/// Studio quotation packages (Option 1 Standard / Option 2 Signature).
+model QuoteOption {
+  id               String   @id @default(uuid())
+  studioId         String
+  code             String
+  title            String
+  subtitle         String?
+  recommended      Boolean  @default(false)
+  crewJson         Json     @default("[]")
+  deliverablesJson Json     @default("[]")
+  appAccessMonths  Int      @default(3)
+  deliveryWeeksMin Int      @default(4)
+  deliveryWeeksMax Int      @default(5)
+  price            Decimal  @db.Decimal(12, 2)
+  servicePackageId String?
+  active           Boolean  @default(true)
+  displayOrder     Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  studio         Studio          @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  servicePackage ServicePackage? @relation(fields: [servicePackageId], references: [id], onDelete: SetNull)
+
+  @@unique([studioId, code])
+  @@index([studioId, active, displayOrder])
+}
+
+model QuoteAddOn {
+  id        String   @id @default(uuid())
+  studioId  String
+  code      String
+  title     String
+  specsJson Json     @default("[]")
+  price     Decimal  @db.Decimal(12, 2)
+  active    Boolean  @default(true)
+  displayOrder Int   @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+
+  @@unique([studioId, code])
+  @@index([studioId, active])
+}
+
+/// Sent quotation (PDF + snapshot). Convertible to WeddingAgreement.
+model Quote {
+  id               String    @id @default(uuid())
+  studioId         String
+  customerId       String
+  leadId           String?
+  agreementId      String?
+  title            String    @default("Photography quotation")
+  /// WEDDING | ENGAGEMENT | OTHER
+  eventType        String    @default("WEDDING")
+  /// DRAFT | SENT | APPROVED | CONVERTED | VOID
+  status           String    @default("DRAFT")
+  clientName       String?
+  eventDate        DateTime?
+  venue            String?
+  overview         String?
+  formData         Json      @default("{}")
+  pricingSnapshot  Json      @default("{}")
+  pdfKey           String?
+  fileSize         Int?
+  sentAt           DateTime?
+  convertedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  studio     Studio             @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  customer   Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  lead       Lead?              @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  agreement  WeddingAgreement?  @relation(fields: [agreementId], references: [id], onDelete: SetNull)
+
+  @@index([studioId, customerId, status])
+  @@index([leadId])
+}
+
+// ---------------------------------------------------------------------------
+// Face recognition pipeline
+// ---------------------------------------------------------------------------
+
+model PhotoFace {
+  id                 String     @id @default(uuid())
+  photoId            String
+  studioId           String
+  galleryId          String
+  collectionId       String
+  rekognitionFaceId  String     @unique
+  externalImageId    String
+  boundingBox        Json?
+  confidence         Float
+  pose               Json?
+  quality            Json?
+  userProfileId      String?
+  faceStatus         FaceStatus @default(ACTIVE)
+  indexedAt          DateTime   @default(now())
+  deletedAt          DateTime?
+  createdAt          DateTime   @default(now())
+
+  photo Photo @relation(fields: [photoId], references: [id], onDelete: Cascade)
+
+  @@index([galleryId, rekognitionFaceId])
+  @@index([photoId])
+  @@index([galleryId, faceStatus])
+}
+
+model FaceSearchSession {
+  id               String            @id @default(uuid())
+  studioId         String
+  galleryId        String?
+  customerId       String
+  consentId        String?
+  selfieKey        String?
+  status           FaceSearchStatus  @default(CREATED)
+  threshold        Float             @default(95)
+  searchedFaceCount Int              @default(0)
+  matchCount       Int               @default(0)
+  safeFailureCode  String?
+  requestedAt      DateTime          @default(now())
+  completedAt      DateTime?
+  expiresAt        DateTime
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  customer Customer          @relation(fields: [customerId], references: [id])
+  matches  FaceSearchMatch[]
+
+  @@index([customerId, createdAt])
+  @@index([status, expiresAt])
+}
+
+model FaceSearchMatch {
+  id              String   @id @default(uuid())
+  sessionId       String
+  photoId         String
+  photoFaceId     String
+  similarity      Float
+  rank            Int
+  includedInResult Boolean @default(true)
+  exclusionReason String?
+  createdAt       DateTime @default(now())
+
+  session FaceSearchSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, photoFaceId])
+  @@index([sessionId, rank])
+  @@index([photoId])
+}
+
+model ConsentRecord {
+  id            String   @id @default(uuid())
+  studioId      String
+  customerId    String
+  consentType   String   @default("face_search")
+  policyVersion String
+  consentedAt   DateTime @default(now())
+  ipHash        String?
+  userAgentHash String?
+  withdrawnAt   DateTime?
+  createdAt     DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId])
+}
+
+// ---------------------------------------------------------------------------
+// Job mirror (BullMQ audit / DLQ / replay) & audit log
+// ---------------------------------------------------------------------------
+
+model ProcessingJob {
+  id                   String    @id @default(uuid())
+  studioId             String?
+  galleryId            String?
+  photoId              String?
+  sessionId            String?
+  jobType              String
+  idempotencyKey       String    @unique
+  status               JobStatus @default(QUEUED)
+  attempts             Int       @default(0)
+  maxAttempts          Int       @default(3)
+  lastErrorCode        String?
+  lastErrorMessageSafe String?
+  payload              Json?
+  scheduledAt          DateTime  @default(now())
+  startedAt            DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([status])
+  @@index([galleryId])
+  @@index([jobType, status])
+}
+
+model FaceIndexJob {
+  id          String          @id @default(uuid())
+  galleryId   String
+  status      FaceIndexStatus @default(PENDING)
+  progress    Int             @default(0)
+  total       Int             @default(0)
+  error       String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime        @default(now())
+
+  @@index([galleryId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  adminId    String?
+  galleryId  String?
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  admin   AdminUser?    @relation(fields: [adminId], references: [id])
+  gallery EventGallery? @relation(fields: [galleryId], references: [id])
+
+  @@index([adminId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp (Baileys session + templates + outbound logs)
+// ---------------------------------------------------------------------------
+
+/// One linked WhatsApp Web session per studio (scan QR once, auth files on disk).
+model WhatsAppSession {
+  id              String    @id @default(uuid())
+  studioId        String    @unique
+  /// DISCONNECTED | QR | CONNECTING | CONNECTED | LOGGED_OUT
+  status          String    @default("DISCONNECTED")
+  phoneNumber     String?
+  displayName     String?
+  lastQrAt        DateTime?
+  lastConnectedAt DateTime?
+  lastError       String?
+  /// When true, auto-send templates for configured triggers
+  autoSendEnabled Boolean   @default(true)
+  /// Typing delay range (ms) before each send
+  typingMinMs     Int       @default(15000)
+  typingMaxMs     Int       @default(20000)
+  /// Max outbound messages per calendar day (safety / anti-ban)
+  dailyTouchpointLimit Int  @default(80)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+}
+
+model WhatsAppTemplate {
+  id          String   @id @default(uuid())
+  studioId    String
+  /// Unique key e.g. GUEST_QR_GREETING, INVOICE_SENT, BOOKING_UPDATE
+  key         String
+  name        String
+  description String?
+  /// Body with {{placeholders}}
+  body        String   @db.Text
+  /// Category for UI grouping
+  category    String   @default("GENERAL")
+  /// Auto-fire trigger event key, or null for manual-only
+  trigger     String?
+  active      Boolean  @default(true)
+  isSystem    Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  studio   Studio              @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  messages WhatsAppMessageLog[]
+
+  @@unique([studioId, key])
+  @@index([studioId, active])
+  @@index([studioId, trigger])
+}
+
+model WhatsAppMessageLog {
+  id           String   @id @default(uuid())
+  studioId     String
+  templateId   String?
+  templateKey  String?
+  campaignId   String?
+  toPhone      String
+  toName       String?
+  body         String   @db.Text
+  /// QUEUED | TYPING | SENT | FAILED | SKIPPED
+  status       String   @default("QUEUED")
+  error        String?
+  /// AUTO | MANUAL | BULK
+  source       String   @default("MANUAL")
+  meta         Json?
+  sentAt       DateTime?
+  createdAt    DateTime @default(now())
+
+  studio   Studio            @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  template WhatsAppTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  campaign WhatsAppCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([studioId, createdAt])
+  @@index([studioId, status])
+  @@index([campaignId])
+}
+
+model WhatsAppCampaign {
+  id          String   @id @default(uuid())
+  studioId    String
+  name        String?
+  templateId  String?
+  templateKey String?
+  /// QUEUED | RUNNING | COMPLETED | FAILED | CANCELLED
+  status      String   @default("QUEUED")
+  total       Int      @default(0)
+  sent        Int      @default(0)
+  failed      Int      @default(0)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  finishedAt  DateTime?
+
+  studio   Studio              @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  messages WhatsAppMessageLog[]
+
+  @@index([studioId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum AdminRole {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+enum GalleryStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+  EXPIRED
+}
+
+enum WorkflowMode {
+  SELECT_ONLY
+  /// Selection (hearts) then downloads after payment unlock.
+  SELECT_AND_DOWNLOAD
+  /// Final delivery — browse + download only, no selection/review.
+  DOWNLOAD_ONLY
+}
+
+enum PaymentMode {
+  OFFLINE
+  GATEWAY
+}
+
+enum SelectionStatus {
+  OPEN
+  SUBMITTED
+  UNLOCKED
+  CLOSED
+}
+
+enum OrderStatus {
+  PLACED
+  CONFIRMED
+  IN_PRODUCTION
+  READY
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  UPI
+  CARD
+  OTHER
+}
+
+enum ContractStatus {
+  SENT
+  VIEWED
+  ACCEPTED
+}
+
+enum IngestionStatus {
+  REGISTERED
+  UPLOADED
+  QUEUED
+  PROCESSING
+  COMPLETE
+  INDEXED
+  PARTIAL
+  REJECTED
+  FAILED
+  DELETED
+}
+
+enum PhotoProcessingStatus {
+  PENDING
+  PROCESSING
+  COMPLETE
+  FAILED
+}
+
+enum FaceStatus {
+  ACTIVE
+  DELETED
+  REJECTED
+}
+
+enum FaceSearchStatus {
+  CREATED
+  VALIDATING
+  SEARCHING
+  COMPLETED
+  NO_MATCH
+  REJECTED
+  RATE_LIMITED
+  FAILED
+  EXPIRED
+}
+
+enum FaceIndexStatus {
+  NOT_STARTED
+  PENDING
+  RUNNING
+  COMPLETE
+  FAILED
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  RETRYING
+  COMPLETED
+  FAILED
+  DEAD_LETTER
+}
+
+/// Atomic document numbers, scoped to a studio and calendar year.
+model BillingSequence {
+  studioId String
+  year Int
+  value Int
+  @@id([studioId, year])
+}
+
+/// A customer payment report is pending evidence, never a ledger receipt.
+model PaymentClaim {
+  id String @id @default(uuid())
+  studioId String
+  customerId String
+  invoiceId String
+  amount Decimal @db.Decimal(12, 2)
+  reference String
+  status String @default("PENDING")
+  paymentId String?
+  reviewedById String?
+  reviewedAt DateTime?
+  note String?
+  createdAt DateTime @default(now())
+  @@unique([studioId, reference])
+  @@index([studioId, status])
+  @@index([invoiceId])
+}
+
+
+/// Stable, opaque app URLs. A short link never changes the destination's access rules.
+model ShortLink {
+  id         String   @id @default(uuid())
+  studioId   String
+  token      String   @unique
+  targetHash String
+  path       String
+  active     Boolean  @default(true)
+  expiresAt  DateTime?
+  createdAt  DateTime @default(now())
+  studio     Studio   @relation(fields: [studioId], references: [id], onDelete: Cascade)
+
+  @@unique([studioId, targetHash])
+}

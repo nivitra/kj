@@ -1,0 +1,1 @@
+ALTER TABLE "WhatsAppSession" ADD COLUMN IF NOT EXISTS "dailyTouchpointLimit" INTEGER NOT NULL DEFAULT 80;
